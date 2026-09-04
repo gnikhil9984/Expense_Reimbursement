@@ -3,6 +3,7 @@ const cors = require("cors");
 require("dotenv").config();
 
 const healthRoutes = require("./routes/healthRoutes");
+const authRoutes = require("./routes/authRoutes");
 
 const notFound = require("./middleware/notFound");
 const errorHandler = require("./middleware/errorHandler");
@@ -17,6 +18,7 @@ app.use(express.json());
 
 // Routes
 app.use("/api", healthRoutes);
+app.use("/api/auth", authRoutes);
 
 // 404 handler
 app.use(notFound);
