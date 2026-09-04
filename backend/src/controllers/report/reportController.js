@@ -374,6 +374,299 @@ async function approveReport(req, res, next) {
     }
 }
 
+async function bulkApproveReports(req, res, next) {
+    try {
+        const approverId = req.user.userId;
+        const { reportIds } = req.body;
+
+        // 1. Validate reportIds
+        if (!Array.isArray(reportIds) || reportIds.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "reportIds must be a non-empty array",
+            });
+        }
+
+        // 2. Validate every ID
+        if (
+            reportIds.some(
+                (id) =>
+                    !Number.isInteger(Number(id)) ||
+                    Number(id) <= 0
+            )
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "reportIds must contain valid positive integers",
+            });
+        }
+
+        // Remove duplicate IDs
+        const uniqueReportIds = [
+            ...new Set(reportIds.map(Number)),
+        ];
+
+        const results = [];
+
+        // 3. Process each report independently
+        for (const reportId of uniqueReportIds) {
+
+            // Check report + approver assignment
+            const reportResult = await pool.query(
+                `SELECT
+                    er.id,
+                    er.owner_id,
+                    er.status,
+                    ra.approver_id
+                 FROM expense_reports er
+                 LEFT JOIN report_approvers ra
+                    ON er.id = ra.report_id
+                    AND ra.approver_id = $2
+                 WHERE er.id = $1`,
+                [reportId, approverId]
+            );
+
+            if (reportResult.rows.length === 0) {
+                results.push({
+                    reportId,
+                    status: "Rejected",
+                    reason: "Report not found",
+                });
+                continue;
+            }
+
+            const report = reportResult.rows[0];
+
+            // 4. Check approver assignment
+            if (!report.approver_id) {
+                results.push({
+                    reportId,
+                    status: "Rejected",
+                    reason: "Not assigned",
+                });
+                continue;
+            }
+
+            // 5. Prevent self approval
+            if (report.owner_id === approverId) {
+                results.push({
+                    reportId,
+                    status: "Rejected",
+                    reason: "Cannot approve your own report",
+                });
+                continue;
+            }
+
+            // 6. Only Submitted reports can be approved
+            if (report.status !== "Submitted") {
+                results.push({
+                    reportId,
+                    status: "Rejected",
+                    reason: "Only submitted reports can be approved",
+                });
+                continue;
+            }
+
+            // 7. Approve report
+            const updatedReport = await pool.query(
+                `UPDATE expense_reports
+                 SET status = 'Approved',
+                     approved_at = NOW(),
+                     updated_at = NOW()
+                 WHERE id = $1
+                 RETURNING id, owner_id, title, status,
+                           submitted_at, approved_at, updated_at`,
+                [reportId]
+            );
+
+            // 8. Record status history
+            await pool.query(
+                `INSERT INTO status_history
+                    (report_id, old_status, new_status, changed_by)
+                 VALUES ($1, $2, $3, $4)`,
+                [
+                    reportId,
+                    report.status,
+                    "Approved",
+                    approverId,
+                ]
+            );
+
+            results.push({
+                reportId,
+                status: "Approved",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Bulk approval processed",
+            results,
+        });
+
+    } catch (error) {
+        next(error);
+    }
+}
+
+async function bulkRejectReports(req, res, next) {
+    try {
+        const approverId = req.user.userId;
+        const { reportIds, reasons } = req.body;
+
+        // 1. Validate reportIds
+        if (!Array.isArray(reportIds) || reportIds.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "reportIds must be a non-empty array",
+            });
+        }
+
+        // 2. Validate every ID
+        if (
+            reportIds.some(
+                (id) =>
+                    !Number.isInteger(Number(id)) ||
+                    Number(id) <= 0
+            )
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "reportIds must contain valid positive integers",
+            });
+        }
+
+        // 3. Validate reasons object
+        if (reasons !== undefined && (typeof reasons !== "object" || Array.isArray(reasons))) {
+            return res.status(400).json({
+                success: false,
+                message: "reasons must be an object",
+            });
+        }
+
+        // Remove duplicate IDs
+        const uniqueReportIds = [
+            ...new Set(reportIds.map(Number)),
+        ];
+
+        const results = [];
+
+        // 4. Process each report independently
+        for (const reportId of uniqueReportIds) {
+
+            // Check report + approver assignment
+            const reportResult = await pool.query(
+                `SELECT
+                    er.id,
+                    er.owner_id,
+                    er.status,
+                    ra.approver_id
+                 FROM expense_reports er
+                 LEFT JOIN report_approvers ra
+                    ON er.id = ra.report_id
+                    AND ra.approver_id = $2
+                 WHERE er.id = $1`,
+                [reportId, approverId]
+            );
+
+            if (reportResult.rows.length === 0) {
+                results.push({
+                    reportId,
+                    status: "Rejected",
+                    reason: "Report not found",
+                });
+                continue;
+            }
+
+            const report = reportResult.rows[0];
+
+            // 5. Check approver assignment
+            if (!report.approver_id) {
+                results.push({
+                    reportId,
+                    status: "Rejected",
+                    reason: "Not assigned",
+                });
+                continue;
+            }
+
+            // 6. Prevent self rejection
+            if (report.owner_id === approverId) {
+                results.push({
+                    reportId,
+                    status: "Rejected",
+                    reason: "Cannot reject your own report",
+                });
+                continue;
+            }
+
+            // 7. Only Submitted reports can be rejected
+            if (report.status !== "Submitted") {
+                results.push({
+                    reportId,
+                    status: "Rejected",
+                    reason: "Only submitted reports can be rejected",
+                });
+                continue;
+            }
+
+            // 8. Get rejection reason for this report
+            const rejectionReason =
+                reasons && reasons[String(reportId)]
+                    ? String(reasons[String(reportId)]).trim()
+                    : "";
+
+            if (!rejectionReason) {
+                results.push({
+                    reportId,
+                    status: "Rejected",
+                    reason: "Rejection reason is required",
+                });
+                continue;
+            }
+
+            // 9. Reject report and return it to Draft
+            await pool.query(
+                `UPDATE expense_reports
+                 SET status = 'Draft',
+                     submitted_at = NULL,
+                     updated_at = NOW()
+                 WHERE id = $1`,
+                [reportId]
+            );
+
+            // 10. Record status history
+            await pool.query(
+                `INSERT INTO status_history
+                    (report_id, old_status, new_status, changed_by, reason)
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [
+                    reportId,
+                    report.status,
+                    "Rejected",
+                    approverId,
+                    rejectionReason,
+                ]
+            );
+
+            results.push({
+                reportId,
+                status: "Rejected",
+                reason: rejectionReason,
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Bulk rejection processed",
+            results,
+        });
+
+    } catch (error) {
+        next(error);
+    }
+}
+
 async function rejectReport(req, res, next) {
     try {
         const reportId = req.params.id;
@@ -983,6 +1276,218 @@ async function getReportDetails(req, res, next) {
     }
 }
 
+async function getMyReports(req, res, next) {
+    try {
+        const userId = req.user.userId;
+
+        const {
+            search,
+            status,
+            category,
+            start_date,
+            end_date,
+        } = req.query;
+
+        // Pagination
+        const page = Number(req.query.page || 1);
+        const limit = Number(req.query.limit || 10);
+
+        // 1. Validate pagination
+        if (!Number.isInteger(page) || page < 1) {
+            return res.status(400).json({
+                success: false,
+                message: "Page must be a positive integer",
+            });
+        }
+
+        if (!Number.isInteger(limit) || limit < 1) {
+            return res.status(400).json({
+                success: false,
+                message: "Limit must be a positive integer",
+            });
+        }
+
+        // Prevent unnecessarily large requests
+        if (limit > 100) {
+            return res.status(400).json({
+                success: false,
+                message: "Limit cannot be greater than 100",
+            });
+        }
+
+        // 2. Validate status
+        const allowedStatuses = [
+            "Draft",
+            "Submitted",
+            "Approved",
+        ];
+
+        if (status && !allowedStatuses.includes(status)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid report status",
+            });
+        }
+
+        // 3. Validate category
+        const allowedCategories = [
+            "Travel",
+            "Meals",
+            "Accommodation",
+            "Supplies",
+            "Other",
+        ];
+
+        if (category && !allowedCategories.includes(category)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid expense category",
+            });
+        }
+
+        // 4. Validate date format
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+
+        if (start_date && !dateRegex.test(start_date)) {
+            return res.status(400).json({
+                success: false,
+                message: "start_date must be in YYYY-MM-DD format",
+            });
+        }
+
+        if (end_date && !dateRegex.test(end_date)) {
+            return res.status(400).json({
+                success: false,
+                message: "end_date must be in YYYY-MM-DD format",
+            });
+        }
+
+        if (start_date && end_date && start_date > end_date) {
+            return res.status(400).json({
+                success: false,
+                message: "start_date cannot be after end_date",
+            });
+        }
+
+        // 5. Build dynamic WHERE conditions
+        const conditions = ["er.owner_id = $1"];
+        const values = [userId];
+
+        let paramIndex = 2;
+
+        // Search by report title
+        if (search && search.trim()) {
+            conditions.push(
+                `er.title ILIKE $${paramIndex}`
+            );
+            values.push(`%${search.trim()}%`);
+            paramIndex++;
+        }
+
+        // Status filter
+        if (status) {
+            conditions.push(
+                `er.status = $${paramIndex}`
+            );
+            values.push(status);
+            paramIndex++;
+        }
+
+        // Category filter
+        if (category) {
+            conditions.push(`
+                EXISTS (
+                    SELECT 1
+                    FROM expense_lines el_filter
+                    WHERE el_filter.report_id = er.id
+                    AND el_filter.category = $${paramIndex}
+                )
+            `);
+            values.push(category);
+            paramIndex++;
+        }
+
+        // Start date filter
+        if (start_date) {
+            conditions.push(
+                `er.start_date >= $${paramIndex}`
+            );
+            values.push(start_date);
+            paramIndex++;
+        }
+
+        // End date filter
+        if (end_date) {
+            conditions.push(
+                `er.end_date <= $${paramIndex}`
+            );
+            values.push(end_date);
+            paramIndex++;
+        }
+
+        const whereClause = conditions.join(" AND ");
+
+        // 6. Get total count
+        const countResult = await pool.query(
+            `SELECT COUNT(*)::int AS total
+             FROM expense_reports er
+             WHERE ${whereClause}`,
+            values
+        );
+
+        const total = countResult.rows[0].total;
+
+        // 7. Calculate pagination
+        const offset = (page - 1) * limit;
+        const totalPages = Math.ceil(total / limit);
+
+        // 8. Get paginated reports
+        const reportResult = await pool.query(
+            `SELECT
+                er.id,
+                er.owner_id,
+                er.title,
+                er.start_date,
+                er.end_date,
+                er.status,
+                er.submitted_at,
+                er.approved_at,
+                er.paid_at,
+                er.is_archived,
+                er.created_at,
+                er.updated_at,
+                COALESCE(
+                    (
+                        SELECT SUM(el.amount)
+                        FROM expense_lines el
+                        WHERE el.report_id = er.id
+                    ),
+                    0
+                ) AS total_amount
+             FROM expense_reports er
+             WHERE ${whereClause}
+             ORDER BY er.created_at DESC
+             LIMIT $${paramIndex}
+             OFFSET $${paramIndex + 1}`,
+            [...values, limit, offset]
+        );
+
+        return res.status(200).json({
+            success: true,
+            reports: reportResult.rows,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages,
+            },
+        });
+
+    } catch (error) {
+        next(error);
+    }
+}
+
 
 async function submitReport(req, res, next) {
     try {
@@ -1056,16 +1561,128 @@ async function submitReport(req, res, next) {
     }
 }
 
+async function exportReports(req, res, next) {
+    try {
+        const userId = req.user.userId;
+
+        // Export only approved and unpaid reports
+        const result = await pool.query(
+            `SELECT
+                id,
+                owner_id,
+                title,
+                start_date,
+                end_date,
+                status,
+                submitted_at,
+                approved_at,
+                paid_at,
+                total_amount
+             FROM (
+                SELECT
+                    er.id,
+                    er.owner_id,
+                    er.title,
+                    er.start_date,
+                    er.end_date,
+                    er.status,
+                    er.submitted_at,
+                    er.approved_at,
+                    er.paid_at,
+                    COALESCE(SUM(el.amount), 0) AS total_amount
+                FROM expense_reports er
+                LEFT JOIN expense_lines el
+                    ON er.id = el.report_id
+                WHERE er.status = 'Approved'
+                  AND er.paid_at IS NULL
+                GROUP BY
+                    er.id,
+                    er.owner_id,
+                    er.title,
+                    er.start_date,
+                    er.end_date,
+                    er.status,
+                    er.submitted_at,
+                    er.approved_at,
+                    er.paid_at
+             ) reports
+             WHERE owner_id = $1
+             ORDER BY approved_at DESC`,
+            [userId]
+        );
+
+        // CSV header
+        const headers = [
+            "id",
+            "owner_id",
+            "title",
+            "start_date",
+            "end_date",
+            "status",
+            "submitted_at",
+            "approved_at",
+            "paid_at",
+            "total_amount",
+        ];
+
+        // Escape CSV values safely
+        const escapeCsv = (value) => {
+            if (value === null || value === undefined) {
+                return "";
+            }
+
+            const stringValue = String(value);
+
+            if (
+                stringValue.includes(",") ||
+                stringValue.includes('"') ||
+                stringValue.includes("\n")
+            ) {
+                return `"${stringValue.replace(/"/g, '""')}"`;
+            }
+
+            return stringValue;
+        };
+
+        const csvRows = result.rows.map((report) =>
+            headers
+                .map((header) => escapeCsv(report[header]))
+                .join(",")
+        );
+
+        const csv = [
+            headers.join(","),
+            ...csvRows,
+        ].join("\n");
+
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader(
+            "Content-Disposition",
+            'attachment; filename="approved-unpaid-reports.csv"'
+        );
+
+        return res.status(200).send(csv);
+
+    } catch (error) {
+        next(error);
+    }
+}
+
 module.exports = {
     createReport,
     updateReport,
     archiveReport,
     submitReport,
     approveReport,
+    bulkApproveReports,
+    bulkRejectReports,
     rejectReport,
     restoreReport, 
     addExpenseLine,
     updateExpenseLine,
     deleteExpenseLine,
     getReportDetails,
+    getMyReports,
+    exportReports,
+    
 };

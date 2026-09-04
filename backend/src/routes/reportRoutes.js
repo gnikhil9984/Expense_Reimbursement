@@ -6,12 +6,16 @@ const {
     archiveReport,
     submitReport,
     approveReport,
+    bulkApproveReports,
+    bulkRejectReports,
     rejectReport,
     restoreReport,
     addExpenseLine,
     updateExpenseLine,
     deleteExpenseLine,
     getReportDetails,
+    getMyReports,
+    exportReports,
 } = require("../controllers/report/reportController");
 
 const authMiddleware = require("../middleware/authMiddleware");
@@ -24,6 +28,36 @@ router.post(
     "/",
     authMiddleware,
     createReport
+);
+
+// Employee gets own reports with search, filters and pagination
+router.get(
+    "/",
+    authMiddleware,
+    getMyReports
+);
+
+// Employee exports approved and unpaid reports as CSV
+router.get(
+    "/export",
+    authMiddleware,
+    exportReports
+);
+
+// Approver bulk approves assigned submitted reports
+router.patch(
+    "/bulk-approve",
+    authMiddleware,
+    requireRole("approver"),
+    bulkApproveReports
+);
+
+// Approver bulk rejects assigned submitted reports
+router.patch(
+    "/bulk-reject",
+    authMiddleware,
+    requireRole("approver"),
+    bulkRejectReports
 );
 
 // Employee updates own draft report
