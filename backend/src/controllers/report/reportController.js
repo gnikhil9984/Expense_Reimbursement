@@ -351,11 +351,123 @@ async function approveReport(req, res, next) {
             [reportId]
         );
 
+        // 5. Record status change in history
+        await pool.query(
+            `INSERT INTO status_history
+                (report_id, old_status, new_status, changed_by)
+            VALUES ($1, $2, $3, $4)`,
+            [
+                reportId,
+                report.status,
+                "Approved",
+                approverId,
+            ]
+        );
+
         return res.status(200).json({
             success: true,
             message: "Report approved successfully",
             report: updatedReport.rows[0],
         });
+    } catch (error) {
+        next(error);
+    }
+}
+
+async function rejectReport(req, res, next) {
+    try {
+        const reportId = req.params.id;
+        const approverId = req.user.userId;
+        const { reason } = req.body;
+
+        // 1. Validate rejection reason
+        if (!reason || !reason.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: "Rejection reason is required",
+            });
+        }
+
+        // 2. Get report and verify approver assignment
+        const result = await pool.query(
+            `SELECT
+                er.id,
+                er.owner_id,
+                er.status,
+                ra.approver_id
+             FROM expense_reports er
+             JOIN report_approvers ra
+                ON er.id = ra.report_id
+             WHERE er.id = $1
+               AND ra.approver_id = $2`,
+            [reportId, approverId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Report not found or you are not an assigned approver",
+            });
+        }
+
+        const report = result.rows[0];
+
+        // 3. Prevent self-rejection
+        if (report.owner_id === approverId) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot reject your own expense report",
+            });
+        }
+
+        // 4. Only Submitted reports can be rejected
+        if (report.status !== "Submitted") {
+            return res.status(400).json({
+                success: false,
+                message: "Only submitted reports can be rejected",
+            });
+        }
+
+        // 5. Reject report and return it to Draft
+        const updatedReport = await pool.query(
+            `UPDATE expense_reports
+             SET status = 'Draft',
+                 submitted_at = NULL,
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING
+                id,
+                owner_id,
+                title,
+                status,
+                submitted_at,
+                updated_at`,
+            [reportId]
+        );
+
+        // 6. Record rejection in status history
+        await pool.query(
+            `INSERT INTO status_history
+                (report_id, old_status, new_status, changed_by, reason)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [
+                reportId,
+                report.status,
+                "Rejected",
+                approverId,
+                reason.trim(),
+            ]
+        );
+
+        return res.status(200).json({
+            success: true,
+            message: "Report rejected successfully",
+            report: updatedReport.rows[0],
+            rejection: {
+                reason: reason.trim(),
+            },
+        });
+
     } catch (error) {
         next(error);
     }
@@ -921,6 +1033,19 @@ async function submitReport(req, res, next) {
             [reportId]
         );
 
+        // 5. Record status change in history
+        await pool.query(
+            `INSERT INTO status_history
+                (report_id, old_status, new_status, changed_by)
+            VALUES ($1, $2, $3, $4)`,
+            [
+                reportId,
+                report.status,
+                "Submitted",
+                userId,
+            ]
+        );
+
         return res.status(200).json({
             success: true,
             message: "Report submitted successfully",
@@ -937,6 +1062,7 @@ module.exports = {
     archiveReport,
     submitReport,
     approveReport,
+    rejectReport,
     restoreReport, 
     addExpenseLine,
     updateExpenseLine,

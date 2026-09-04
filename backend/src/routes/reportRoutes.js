@@ -6,6 +6,7 @@ const {
     archiveReport,
     submitReport,
     approveReport,
+    rejectReport,
     restoreReport,
     addExpenseLine,
     updateExpenseLine,
@@ -53,6 +54,14 @@ router.patch(
     authMiddleware,
     requireRole("approver"),
     approveReport
+);
+
+// Approver rejects an assigned submitted report
+router.patch(
+    "/:id/reject",
+    authMiddleware,
+    requireRole("approver"),
+    rejectReport
 );
 
 // Employee restores own archived report
