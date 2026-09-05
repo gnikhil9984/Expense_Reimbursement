@@ -1,10 +1,11 @@
 # Architecture & Engineering Decisions
 
-This document records important technical decisions made during the
-development of the Expense Reimbursement application.
+This document records the major technical and engineering decisions made
+during the development and deployment of the Expense Reimbursement
+application.
 
-The purpose is to explain not only what was selected, but also why the
-decision was made and what trade-offs were considered.
+The purpose is to explain what was selected, why it was selected, and the
+important trade-offs considered during implementation.
 
 ---
 
@@ -16,18 +17,21 @@ Use React with Vite for the frontend application.
 
 ## Why
 
-React provides a component-based approach that is suitable for building
-multiple screens such as:
+The application contains multiple interactive screens and role-based
+workflows. React provides a component-based structure suitable for:
 
 - Login
+- Registration
 - Employee dashboard
 - Approver dashboard
-- Expense report forms
-- Approval queues
+- Expense report management
 - Report details
-- Dashboard analytics
+- Approval and rejection actions
+- Search and filtering
+- Bulk actions
+- CSV export
 
-Vite provides a simple and fast development environment for React.
+Vite provides a fast development and production build environment.
 
 ## Alternatives Considered
 
@@ -36,9 +40,8 @@ Vite provides a simple and fast development environment for React.
 
 ## Trade-off
 
-React introduces additional tooling compared with plain HTML/CSS/JavaScript,
-but the component architecture is more suitable for this application's
-multiple interactive screens.
+React introduces additional frontend tooling, but its component-based
+architecture makes the application easier to organize and maintain.
 
 ---
 
@@ -46,20 +49,24 @@ multiple interactive screens.
 
 ## Decision
 
-Use Node.js with Express.js for the REST API.
+Use Node.js with Express.js for the REST API backend.
 
 ## Why
 
-The application requires multiple API endpoints, middleware, authentication,
-authorization, validation, and error handling.
+The application requires:
 
-Express provides a simple structure for:
-
-- Routes
-- Controllers
-- Middleware
+- REST API endpoints
+- Authentication
+- Authorization
+- Role-based access control
+- Report management
+- Approval and rejection workflows
+- Validation
 - Error handling
-- REST APIs
+- Middleware
+
+Express provides a simple structure for organizing routes, controllers,
+middleware, and API responses.
 
 ## Alternatives Considered
 
@@ -68,34 +75,40 @@ Express provides a simple structure for:
 
 ## Trade-off
 
-Express adds a framework dependency, but it significantly simplifies API
-development and middleware management.
+Express adds a framework dependency, but it significantly simplifies
+backend API development and middleware management.
 
 ---
 
-# Decision 3 — Use PostgreSQL through Supabase
+# Decision 3 — Use PostgreSQL Through Supabase
 
 ## Decision
 
-Use PostgreSQL as the production database and host it through Supabase.
+Use PostgreSQL as the application's database and host it through Supabase.
 
 ## Why
 
-The application contains relational data such as:
+The application contains strongly related data including:
 
 - Users
 - Expense reports
 - Expense lines
-- Approvers
+- Report approvers
 - Status history
 - Comments
 - Alerts
 
-PostgreSQL provides strong relational integrity through foreign keys,
-constraints, transactions, and indexes.
+PostgreSQL provides:
 
-Supabase provides managed PostgreSQL infrastructure suitable for a deployed
-application.
+- Foreign keys
+- Constraints
+- Indexes
+- Relational integrity
+- Transactions
+- Persistent storage
+
+Supabase provides managed PostgreSQL infrastructure suitable for the
+deployed application.
 
 ## Alternatives Considered
 
@@ -104,8 +117,8 @@ application.
 
 ## Trade-off
 
-A managed PostgreSQL database requires more setup than a local SQLite
-database, but it is more appropriate for a persistent deployed application.
+Managed PostgreSQL requires more configuration than a local SQLite database,
+but it is more appropriate for a persistent deployed application.
 
 ---
 
@@ -113,30 +126,34 @@ database, but it is more appropriate for a persistent deployed application.
 
 ## Initial Decision
 
-During the early planning stage, SQLite was considered because it is simple
+SQLite was considered during the early planning stage because it is simple
 for local development and does not require a separate database server.
 
 ## Problem Identified
 
-The project needs a working deployed application.
+The project requires a deployed backend with persistent database storage.
 
-A local SQLite database depends on the filesystem of the hosting environment.
-For a deployed backend, this can create persistence and operational concerns.
+A local SQLite database depends on the hosting environment's filesystem,
+which is not an appropriate final architecture for this application.
 
 ## Revised Decision
 
-The database approach was changed from SQLite to Supabase PostgreSQL.
+The final database architecture uses Supabase PostgreSQL.
 
-## Why the Decision Was Reversed
+## Reason
 
-Supabase provides a persistent managed PostgreSQL database that is more
-appropriate for the application's deployment architecture.
+Supabase provides persistent managed PostgreSQL infrastructure and allows
+the backend to connect using a PostgreSQL connection URL.
 
-The final architecture is:
+## Final Architecture
 
 ```text
-React + Vite
-      ↓
-Node.js + Express
-      ↓
+React + Vite Frontend
+        |
+        | HTTPS REST API
+        v
+Node.js + Express Backend
+        |
+        | PostgreSQL connection
+        v
 Supabase PostgreSQL
