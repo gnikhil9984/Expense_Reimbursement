@@ -110,11 +110,11 @@ async function updateReport(req, res, next) {
             });
         }
 
-        // 3. Only Draft reports can be edited
-        if (report.status !== "Draft") {
+        /// 3. Only Draft or Rejected reports can be edited
+        if (!["Draft", "Rejected"].includes(report.status)) {
             return res.status(400).json({
                 success: false,
-                message: "Only draft reports can be edited",
+                message: "Only draft or rejected reports can be edited",
             });
         }
 
@@ -184,13 +184,17 @@ async function updateReport(req, res, next) {
         // 10. Update report
         const updatedReport = await pool.query(
             `UPDATE expense_reports
-             SET
+            SET
                 title = $1,
                 start_date = $2,
                 end_date = $3,
+                status = CASE
+                            WHEN status = 'Rejected' THEN 'Draft'
+                            ELSE status
+                        END,
                 updated_at = NOW()
-             WHERE id = $4
-             RETURNING
+            WHERE id = $4
+            RETURNING
                 id,
                 owner_id,
                 title,
@@ -253,10 +257,10 @@ async function archiveReport(req, res, next) {
         }
 
         // 3. Only Draft reports can be archived
-        if (report.status !== "Draft") {
+        if (report.status !== "Draft" && report.status !== "Rejected") {
             return res.status(400).json({
                 success: false,
-                message: "Only draft reports can be archived",
+                message: "Only draft or rejected reports can be edited",
             });
         }
 
@@ -625,11 +629,10 @@ async function bulkRejectReports(req, res, next) {
                 continue;
             }
 
-            // 9. Reject report and return it to Draft
+            // 9. Reject report
             await pool.query(
                 `UPDATE expense_reports
-                 SET status = 'Draft',
-                     submitted_at = NULL,
+                 SET status = 'Rejected',
                      updated_at = NOW()
                  WHERE id = $1`,
                 [reportId]
@@ -721,11 +724,10 @@ async function rejectReport(req, res, next) {
             });
         }
 
-        // 5. Reject report and return it to Draft
+        // 5. Reject report 
         const updatedReport = await pool.query(
             `UPDATE expense_reports
-             SET status = 'Draft',
-                 submitted_at = NULL,
+             SET status = 'Rejected',
                  updated_at = NOW()
              WHERE id = $1
              RETURNING
@@ -1279,6 +1281,7 @@ async function getReportDetails(req, res, next) {
 async function getMyReports(req, res, next) {
     try {
         const userId = req.user.userId;
+        const userRole = req.user.role;
 
         const {
             search,
@@ -1292,7 +1295,9 @@ async function getMyReports(req, res, next) {
         const page = Number(req.query.page || 1);
         const limit = Number(req.query.limit || 10);
 
+        // -----------------------------
         // 1. Validate pagination
+        // -----------------------------
         if (!Number.isInteger(page) || page < 1) {
             return res.status(400).json({
                 success: false,
@@ -1307,7 +1312,6 @@ async function getMyReports(req, res, next) {
             });
         }
 
-        // Prevent unnecessarily large requests
         if (limit > 100) {
             return res.status(400).json({
                 success: false,
@@ -1315,11 +1319,14 @@ async function getMyReports(req, res, next) {
             });
         }
 
+        // -----------------------------
         // 2. Validate status
+        // -----------------------------
         const allowedStatuses = [
             "Draft",
             "Submitted",
             "Approved",
+            "Rejected",
         ];
 
         if (status && !allowedStatuses.includes(status)) {
@@ -1329,7 +1336,9 @@ async function getMyReports(req, res, next) {
             });
         }
 
+        // -----------------------------
         // 3. Validate category
+        // -----------------------------
         const allowedCategories = [
             "Travel",
             "Meals",
@@ -1345,7 +1354,9 @@ async function getMyReports(req, res, next) {
             });
         }
 
-        // 4. Validate date format
+        // -----------------------------
+        // 4. Validate dates
+        // -----------------------------
         const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
         if (start_date && !dateRegex.test(start_date)) {
@@ -1369,31 +1380,82 @@ async function getMyReports(req, res, next) {
             });
         }
 
-        // 5. Build dynamic WHERE conditions
-        const conditions = ["er.owner_id = $1"];
-        const values = [userId];
+        // -----------------------------
+        // 5. Build query
+        // -----------------------------
+        const conditions = [];
+        const values = [];
 
-        let paramIndex = 2;
+        let paramIndex = 1;
 
-        // Search by report title
+        /*
+         * EMPLOYEE
+         * ----------
+         * Employee can see only own reports.
+         */
+        if (userRole === "employee") {
+            conditions.push(`er.owner_id = $${paramIndex}`);
+            values.push(userId);
+            paramIndex++;
+        }
+
+        /*
+         * APPROVER
+         * ----------
+         * Approver can see only reports assigned
+         * to that approver.
+         */
+        else if (userRole === "approver") {
+            conditions.push(`
+                EXISTS (
+                    SELECT 1
+                    FROM report_approvers ra
+                    WHERE ra.report_id = er.id
+                    AND ra.approver_id = $${paramIndex}
+                )
+            `);
+
+            values.push(userId);
+            paramIndex++;
+        }
+
+        /*
+         * Unknown role
+         */
+        else {
+            return res.status(403).json({
+                success: false,
+                message: "Invalid user role",
+            });
+        }
+
+        // -----------------------------
+        // 6. Search by report title
+        // -----------------------------
         if (search && search.trim()) {
             conditions.push(
                 `er.title ILIKE $${paramIndex}`
             );
+
             values.push(`%${search.trim()}%`);
             paramIndex++;
         }
 
-        // Status filter
+        // -----------------------------
+        // 7. Status filter
+        // -----------------------------
         if (status) {
             conditions.push(
                 `er.status = $${paramIndex}`
             );
+
             values.push(status);
             paramIndex++;
         }
 
-        // Category filter
+        // -----------------------------
+        // 8. Category filter
+        // -----------------------------
         if (category) {
             conditions.push(`
                 EXISTS (
@@ -1403,49 +1465,67 @@ async function getMyReports(req, res, next) {
                     AND el_filter.category = $${paramIndex}
                 )
             `);
+
             values.push(category);
             paramIndex++;
         }
 
-        // Start date filter
+        // -----------------------------
+        // 9. Start date filter
+        // -----------------------------
         if (start_date) {
             conditions.push(
                 `er.start_date >= $${paramIndex}`
             );
+
             values.push(start_date);
             paramIndex++;
         }
 
-        // End date filter
+        // -----------------------------
+        // 10. End date filter
+        // -----------------------------
         if (end_date) {
             conditions.push(
                 `er.end_date <= $${paramIndex}`
             );
+
             values.push(end_date);
             paramIndex++;
         }
 
         const whereClause = conditions.join(" AND ");
 
-        // 6. Get total count
+        // -----------------------------
+        // 11. Count reports
+        // -----------------------------
         const countResult = await pool.query(
-            `SELECT COUNT(*)::int AS total
-             FROM expense_reports er
-             WHERE ${whereClause}`,
+            `
+            SELECT COUNT(*)::int AS total
+            FROM expense_reports er
+            WHERE ${whereClause}
+            `,
             values
         );
 
         const total = countResult.rows[0].total;
 
-        // 7. Calculate pagination
+        // -----------------------------
+        // 12. Pagination
+        // -----------------------------
         const offset = (page - 1) * limit;
         const totalPages = Math.ceil(total / limit);
 
-        // 8. Get paginated reports
+        // -----------------------------
+        // 13. Get reports
+        // -----------------------------
         const reportResult = await pool.query(
-            `SELECT
+            `
+            SELECT
                 er.id,
                 er.owner_id,
+                u.name AS owner_name,
+                u.email AS owner_email,
                 er.title,
                 er.start_date,
                 er.end_date,
@@ -1456,6 +1536,7 @@ async function getMyReports(req, res, next) {
                 er.is_archived,
                 er.created_at,
                 er.updated_at,
+
                 COALESCE(
                     (
                         SELECT SUM(el.amount)
@@ -1464,14 +1545,25 @@ async function getMyReports(req, res, next) {
                     ),
                     0
                 ) AS total_amount
-             FROM expense_reports er
-             WHERE ${whereClause}
-             ORDER BY er.created_at DESC
-             LIMIT $${paramIndex}
-             OFFSET $${paramIndex + 1}`,
+
+            FROM expense_reports er
+
+            JOIN users u
+                ON u.id = er.owner_id
+
+            WHERE ${whereClause}
+
+            ORDER BY er.created_at DESC
+
+            LIMIT $${paramIndex}
+            OFFSET $${paramIndex + 1}
+            `,
             [...values, limit, offset]
         );
 
+        // -----------------------------
+        // 14. Response
+        // -----------------------------
         return res.status(200).json({
             success: true,
             reports: reportResult.rows,
@@ -1484,6 +1576,7 @@ async function getMyReports(req, res, next) {
         });
 
     } catch (error) {
+        console.error("Get reports error:", error);
         next(error);
     }
 }
@@ -1527,22 +1620,72 @@ async function submitReport(req, res, next) {
             });
         }
 
-        // 4. Submit report
+        // 4. Find an approver automatically
+        //    Select the approver having the fewest assigned reports
+        const approverResult = await pool.query(
+            `SELECT
+                u.id,
+                u.name,
+                u.email,
+                COUNT(ra.report_id)::int AS assigned_reports
+             FROM users u
+             LEFT JOIN report_approvers ra
+                ON u.id = ra.approver_id
+             WHERE u.role = 'approver'
+             GROUP BY u.id, u.name, u.email
+             ORDER BY assigned_reports ASC, u.id ASC
+             LIMIT 1`
+        );
+
+        if (approverResult.rows.length === 0) {
+            return res.status(500).json({
+                success: false,
+                message: "No approver is available to review this report",
+            });
+        }
+
+        const approver = approverResult.rows[0];
+
+        // Prevent assigning report to its own owner
+        if (approver.id === userId) {
+            return res.status(500).json({
+                success: false,
+                message: "A valid approver could not be assigned",
+            });
+        }
+
+        // 5. Submit report
         const updatedReport = await pool.query(
             `UPDATE expense_reports
-            SET status = 'Submitted',
-                submitted_at = NOW(),
-                updated_at = NOW()
-            WHERE id = $1
-            RETURNING id, owner_id, title, status, submitted_at, updated_at`,
+             SET status = 'Submitted',
+                 submitted_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING
+                 id,
+                 owner_id,
+                 title,
+                 status,
+                 submitted_at,
+                 updated_at`,
             [reportId]
         );
 
-        // 5. Record status change in history
+        // 6. Automatically assign approver
+        await pool.query(
+            `INSERT INTO report_approvers
+                (report_id, approver_id)
+             VALUES
+                ($1, $2)`,
+            [reportId, approver.id]
+        );
+
+        // 7. Record status change in history
         await pool.query(
             `INSERT INTO status_history
                 (report_id, old_status, new_status, changed_by)
-            VALUES ($1, $2, $3, $4)`,
+             VALUES
+                ($1, $2, $3, $4)`,
             [
                 reportId,
                 report.status,
@@ -1556,6 +1699,7 @@ async function submitReport(req, res, next) {
             message: "Report submitted successfully",
             report: updatedReport.rows[0],
         });
+
     } catch (error) {
         next(error);
     }
@@ -1564,21 +1708,17 @@ async function submitReport(req, res, next) {
 async function exportReports(req, res, next) {
     try {
         const userId = req.user.userId;
+        const userRole = req.user.role;
 
-        // Export only approved and unpaid reports
-        const result = await pool.query(
-            `SELECT
-                id,
-                owner_id,
-                title,
-                start_date,
-                end_date,
-                status,
-                submitted_at,
-                approved_at,
-                paid_at,
-                total_amount
-             FROM (
+        let result;
+
+        // =====================================================
+        // APPROVER EXPORT
+        // Export approved + unpaid reports assigned to approver
+        // =====================================================
+        if (userRole === "approver") {
+            result = await pool.query(
+                `
                 SELECT
                     er.id,
                     er.owner_id,
@@ -1591,6 +1731,9 @@ async function exportReports(req, res, next) {
                     er.paid_at,
                     COALESCE(SUM(el.amount), 0) AS total_amount
                 FROM expense_reports er
+                INNER JOIN report_approvers ra
+                    ON er.id = ra.report_id
+                   AND ra.approver_id = $1
                 LEFT JOIN expense_lines el
                     ON er.id = el.report_id
                 WHERE er.status = 'Approved'
@@ -1605,13 +1748,56 @@ async function exportReports(req, res, next) {
                     er.submitted_at,
                     er.approved_at,
                     er.paid_at
-             ) reports
-             WHERE owner_id = $1
-             ORDER BY approved_at DESC`,
-            [userId]
-        );
+                ORDER BY er.approved_at DESC
+                `,
+                [userId]
+            );
+        }
 
-        // CSV header
+        // =====================================================
+        // EMPLOYEE EXPORT
+        // Export employee's own approved + unpaid reports
+        // =====================================================
+        else {
+            result = await pool.query(
+                `
+                SELECT
+                    er.id,
+                    er.owner_id,
+                    er.title,
+                    er.start_date,
+                    er.end_date,
+                    er.status,
+                    er.submitted_at,
+                    er.approved_at,
+                    er.paid_at,
+                    COALESCE(SUM(el.amount), 0) AS total_amount
+                FROM expense_reports er
+                LEFT JOIN expense_lines el
+                    ON er.id = el.report_id
+                WHERE er.owner_id = $1
+                  AND er.status = 'Approved'
+                  AND er.paid_at IS NULL
+                GROUP BY
+                    er.id,
+                    er.owner_id,
+                    er.title,
+                    er.start_date,
+                    er.end_date,
+                    er.status,
+                    er.submitted_at,
+                    er.approved_at,
+                    er.paid_at
+                ORDER BY er.approved_at DESC
+                `,
+                [userId]
+            );
+        }
+
+        // =====================================================
+        // CSV HEADER
+        // =====================================================
+
         const headers = [
             "id",
             "owner_id",
@@ -1625,7 +1811,10 @@ async function exportReports(req, res, next) {
             "total_amount",
         ];
 
-        // Escape CSV values safely
+        // =====================================================
+        // CSV ESCAPE
+        // =====================================================
+
         const escapeCsv = (value) => {
             if (value === null || value === undefined) {
                 return "";
@@ -1644,6 +1833,10 @@ async function exportReports(req, res, next) {
             return stringValue;
         };
 
+        // =====================================================
+        // CREATE CSV ROWS
+        // =====================================================
+
         const csvRows = result.rows.map((report) =>
             headers
                 .map((header) => escapeCsv(report[header]))
@@ -1655,7 +1848,15 @@ async function exportReports(req, res, next) {
             ...csvRows,
         ].join("\n");
 
-        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        // =====================================================
+        // RESPONSE
+        // =====================================================
+
+        res.setHeader(
+            "Content-Type",
+            "text/csv; charset=utf-8"
+        );
+
         res.setHeader(
             "Content-Disposition",
             'attachment; filename="approved-unpaid-reports.csv"'
