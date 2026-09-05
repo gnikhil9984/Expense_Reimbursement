@@ -1,81 +1,141 @@
 # AI Prompts & Development Notes
 
-This document records important AI-assisted development prompts and the
-corrections/decisions made during the development of the project.
+This document describes how AI assistance was used during the development of
+the Expense Reimbursement application.
 
-AI assistance was used as a development aid. The generated suggestions were
-reviewed, tested, and adjusted before being included in the project.
+AI was used as a development assistant at different stages of the project.
+The prompts were generally focused on one problem at a time — understanding
+requirements, designing the database, implementing backend functionality,
+building the frontend, debugging issues, and preparing the application for
+deployment.
 
----
-
-# 1. Project Requirement Analysis
-
-## Prompt
-
-> Analyze the Expense Reimbursement assignment requirements and break them
-> into implementation phases suitable for a beginner developer. Identify
-> the required backend, database, frontend, workflow, security, testing,
-> documentation, and deployment tasks.
-
-## Outcome
-
-The project was divided into incremental phases:
-
-1. Project setup
-2. Backend foundation
-3. Database
-4. Authentication
-5. Expense reports
-6. Approval workflow
-7. Search/filter/pagination
-8. Bulk actions and CSV export
-9. Dashboard
-10. Comments and audit history
-11. Alerts
-12. Frontend
-13. Testing
-14. Deployment
-15. Final documentation
+The responses were reviewed and tested during development before the changes
+were kept in the project.
 
 ---
 
-# 2. Database Design
+# 1. Understanding the Project Requirements
 
 ## Prompt
 
-> Design a relational PostgreSQL schema for an Expense Reimbursement
-> application supporting users, employee/approver roles, expense reports,
-> expense lines, many-to-many approver assignments, immutable status history,
-> comments, and stale approval alerts.
+> Read the Expense Reimbursement application requirements and explain what
+> needs to be built. Break the requirements into logical development phases
+> so that the project can be implemented and tested step by step.
 
-## Outcome
+## Why This Prompt Was Used
 
-The schema was designed using seven main tables:
+Before writing code, the project requirements needed to be converted into
+smaller and manageable tasks.
 
-- users
-- expense_reports
-- expense_lines
-- report_approvers
-- status_history
-- comments
-- alerts
+## Result
 
-Foreign keys, check constraints, unique constraints, indexes, and an
-immutable status-history trigger were added.
+The requirements were organized around the major areas of the application:
+
+- Project setup
+- Backend foundation
+- Database
+- Authentication and authorization
+- Expense reports
+- Approval workflow
+- Search and filtering
+- Bulk actions
+- CSV export
+- Dashboard
+- Comments and status history
+- Frontend
+- Testing
+- Deployment
+- Documentation
+
+This gave the project a clear development sequence.
 
 ---
 
-# 3. Database Connection
+# 2. Planning the Backend Structure
 
 ## Prompt
 
-> Show how to connect a Node.js Express backend to PostgreSQL using the pg
-> package and environment variables. Do not expose database credentials in
-> source code.
+> Suggest a simple Node.js and Express backend structure for this expense
+> reimbursement application. Separate routes, controllers, middleware,
+> database connection, authentication, and error handling without making
+> the project unnecessarily complex.
 
-## Outcome
+## Result
 
-A PostgreSQL connection pool was created in:
+The backend was organized into separate responsibilities:
+
+- Routes
+- Controllers
+- Middleware
+- Database connection
+- Authentication
+- Error handling
+
+This made it easier to locate and modify functionality as new features
+were implemented.
+
+---
+
+# 3. Designing the Database
+
+## Prompt
+
+> Design a normalized PostgreSQL schema for an expense reimbursement system.
+> The application needs users, expense reports, expense lines, approver
+> assignments, status history, comments, and alerts. Include relationships,
+> foreign keys, constraints, and useful indexes.
+
+## Result
+
+The database was structured around the following tables:
+
+- `users`
+- `expense_reports`
+- `expense_lines`
+- `report_approvers`
+- `status_history`
+- `comments`
+- `alerts`
+
+The design also included relationships between the tables and database-level
+constraints for important data validation.
+
+---
+
+# 4. Protecting Status History
+
+## Prompt
+
+> The expense report needs an audit trail. How can PostgreSQL be used to
+> prevent existing status history records from being modified or deleted
+> after they are created?
+
+## Result
+
+A PostgreSQL trigger was used for the `status_history` table.
+
+The trigger prevents:
+
+- Updating existing history records
+- Deleting existing history records
+
+This keeps previously recorded status changes immutable.
+
+---
+
+# 5. Connecting PostgreSQL to the Backend
+
+## Prompt
+
+> Show how to connect an Express application to PostgreSQL using the `pg`
+> package and an environment variable such as DATABASE_URL. Keep database
+> credentials outside the source code.
+
+## Result
+
+A PostgreSQL connection pool was configured in the backend.
+
+The database connection uses:
 
 ```text
-backend/src/db.js
+DATABASE_URL
